@@ -33,11 +33,6 @@ jobs:
       contents: read
     timeout-minutes: 5
     steps:
-      - name: "Checkout repository"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
       # Perform setup prior to running test(s)
       - name: "Checkout sample project repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,12 +56,12 @@ jobs:
           python -m build
 
       - name: "Run Action: ${{ github.repository }}"
-        uses: ./
+        uses: $/
         with:
           path: "test-python-project/dist"
 
       - name: "Run Action: ${{ github.repository }} [PATH PREFIX]"
-        uses: ./
+        uses: $/
         with:
           path_prefix: "test-python-project"
           path: "dist"
