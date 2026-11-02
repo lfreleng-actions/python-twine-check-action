@@ -55,6 +55,36 @@ jobs:
           cd test-python-project
           python -m build
 
+      # setup-uv runs the interpreter 'uv python find' picks in its
+      # working directory and reads uv settings there, which once was the
+      # caller's workspace. Plant, in the workspace and the path_prefix
+      # used below, a .venv and a .python-version whose interpreters only
+      # record that they ran, and a uv.toml no uv can satisfy, so the
+      # runs below fail if the action uses any of them.
+      - name: "Plant workspace .venv, .python-version and uv.toml"
+        shell: bash
+        run: |
+          # Plant workspace .venv, .python-version and uv.toml
+          marker="${RUNNER_TEMP}/planted-ran"
+          for dir in "${GITHUB_WORKSPACE}" \
+            "${GITHUB_WORKSPACE}/test-python-project"; do
+            mkdir -p "${dir}/.venv/bin" "${dir}/.planted-python/bin"
+            printf 'home = /usr/bin\nversion = 3.12.0\n' \
+              > "${dir}/.venv/pyvenv.cfg"
+            for exe in "${dir}/.venv/bin/python3" "${dir}/.venv/bin/python" \
+              "${dir}/.planted-python/bin/python3"; do
+              printf '#!/bin/sh\necho "%s $*" >> "%s"\nexit 1\n' \
+                "${exe}" "${marker}" > "${exe}"
+              chmod +x "${exe}"
+            done
+            printf '%s\n' "${dir}/.planted-python/bin/python3" \
+              > "${dir}/.python-version"
+            {
+              echo 'cache-dir = "/nonexistent/planted-cache"'
+              echo 'required-version = "==0.0.1"'
+            } > "${dir}/uv.toml"
+          done
+
       - name: "Run Action: ${{ github.repository }}"
         uses: $/
         with:
@@ -65,3 +95,16 @@ jobs:
         with:
           path_prefix: "test-python-project"
           path: "dist"
+
+      # Both runs above passed twine check; neither may have started a
+      # planted interpreter.
+      - name: "Check no planted interpreter ran"
+        shell: bash
+        run: |
+          # Check no planted interpreter ran
+          if [ -e "${RUNNER_TEMP}/planted-ran" ]; then
+            echo "Error: the action ran a planted workspace interpreter ❌"
+            cat "${RUNNER_TEMP}/planted-ran"
+            exit 1
+          fi
+          echo "No planted interpreter ran ✅"
