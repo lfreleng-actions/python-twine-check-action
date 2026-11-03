@@ -58,10 +58,20 @@ Verified Python build artefacts with Twine ✅
 
 ## Twine Version
 
-This action pins the twine version in `requirements/twine.txt` and runs
-it under `uvx`, which resolves it in an isolated, ephemeral environment
-and leaves the caller's Python environment untouched. The action
-installs `uv` itself, so callers need no setup.
+This action pins the twine version in `requirements/twine.txt` and
+installs it with `uv` into a virtual environment under the runner's
+temporary directory, leaving the caller's Python environment untouched.
+The action installs `uv` and a uv-managed Python itself, so callers need
+no setup. It runs that Python by absolute path, in isolated mode, so
+interpreter settings from earlier steps of the caller's job (`PATH`,
+`UV_PYTHON`, `VIRTUAL_ENV`, `PYTHONPATH` and similar) cannot make it
+run an interpreter or module from the caller's workspace.
+
+The action trusts the caller's `PATH`. Its own steps start Python and
+`uv` by absolute path, but the runner itself finds `bash` on `PATH` for
+every step and `setup-uv` runs system tools from it, so no composite
+action can defend against a caller that has already put a directory
+from its checkout on `PATH`.
 
 Keeping the pin current matters. Twine replaces the list of valid core
 metadata versions with its own hard-coded copy, so a stale twine starts

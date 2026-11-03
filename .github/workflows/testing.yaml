@@ -108,3 +108,163 @@ jobs:
             exit 1
           fi
           echo "No planted interpreter ran ✅"
+
+  # A composite action inherits the caller's environment. Plant, the way
+  # an earlier caller step could through GITHUB_PATH and GITHUB_ENV,
+  # bait interpreters, stdlib-named modules and hostile Python/uv
+  # settings; the action must run none of them, cold or warm.
+  isolation:
+    name: "Workspace Isolation"
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        selector: [request, active-environment]
+    steps:
+      - name: "Checkout sample project repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: "lfreleng-actions/test-python-project"
+          path: "test-python-project"
+
+      - name: "Setup Python"
+        id: setup-python
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: "test-python-project/pyproject.toml"
+
+      - name: "Build sample Python project"
+        shell: bash
+        env:
+          REAL_PYTHON: "${{ steps.setup-python.outputs.python-path }}"
+        run: |
+          # Build sample Python project
+          "$REAL_PYTHON" -m pip --disable-pip-version-check install build
+          cd test-python-project
+          "$REAL_PYTHON" -m build
+
+      - name: "Plant bait and hostile settings"
+        shell: bash
+        env:
+          SELECTOR: "${{ matrix.selector }}"
+        run: |
+          # Plant bait and hostile settings
+          marker="${RUNNER_TEMP}/planted-ran"
+          ws="${GITHUB_WORKSPACE}"
+          mkdir -p "${ws}/.venv/bin" "${ws}/.venv/conda-meta" \
+            "${ws}/xdg-bin" "${ws}/pkg/urllib" "${ws}/urllib"
+          printf 'home = /usr/bin\nversion = 3.13.0\n' \
+            > "${ws}/.venv/pyvenv.cfg"
+          for exe in .venv/bin/python .venv/bin/python3 \
+            .venv/bin/python3.13 .venv/bin/uv xdg-bin/env xdg-bin/bash; do
+            printf '#!/bin/sh\necho "%s $*" >> "%s"\nexit 1\n' \
+              "${exe}" "${marker}" > "${ws}/${exe}"
+            chmod +x "${ws}/${exe}"
+          done
+          for mod in json.py base64.py sitecustomize.py usercustomize.py \
+            urllib/__init__.py startup.py; do
+            for dir in "${ws}" "${ws}/pkg"; do
+              printf 'with open(%s, "a") as f:\n    f.write("import %s\\n")\n' \
+                "'${marker}'" "${dir}/${mod}" > "${dir}/${mod}"
+            done
+          done
+          case "${RUNNER_ARCH}" in
+            ARM64) arch=aarch64 ;;
+            *) arch=x86_64 ;;
+          esac
+          bait="${ws}/.venv/bin/python3"
+          # The runner puts GITHUB_PATH entries ahead of PATH, so a PATH=
+          # line in GITHUB_ENV would sit behind setup-python's directory.
+          echo "${ws}/.venv/bin" >> "${GITHUB_PATH}"
+          {
+            echo "PYTHONPATH=pkg:."
+            echo "PYTHONHOME=${ws}/.venv"
+            echo "PYTHONUSERBASE=${ws}/pkg"
+            echo "PYTHONSTARTUP=${ws}/startup.py"
+            echo "PYTHONEXECUTABLE=${bait}"
+            echo "__PYVENV_LAUNCHER__=${bait}"
+            echo "UV_NO_CACHE=1"
+            echo "UV_PYTHON_ARCH=${arch}"
+            echo "UV_PYTHON_INSTALL_MIRROR=https://127.0.0.1:9"
+            echo "XDG_BIN_HOME=${ws}/xdg-bin"
+            if [ "${SELECTOR}" = "request" ]; then
+              echo "UV_PYTHON=${bait}"
+              echo "UV_PYTHON_SEARCH_PATH=${ws}/.venv/bin"
+              echo "UV_PYTHON_INSTALL_DIR=${ws}/uv-python"
+              echo "UV_PYTHON_PREFERENCE=only-system"
+            else
+              # UV_PYTHON stays unset: it would mask the active environment
+              echo "VIRTUAL_ENV=${ws}/.venv"
+              echo "CONDA_PREFIX=${ws}/.venv"
+              echo "CONDA_DEFAULT_ENV=base"
+              echo "UV_INTERNAL__PARENT_INTERPRETER=${bait}"
+              echo "UV_INTERNAL__TEST_PYTHON_MANAGED=${ws}/.venv/bin"
+              echo "UV_CACHE_DIR=${ws}/uv-cache"
+            fi
+          } >> "${GITHUB_ENV}"
+
+      # Control: prove the bait is live, so a clean verify step means
+      # the action avoided it rather than that it could never fire.
+      - name: "Control: bait runs without isolation"
+        shell: bash
+        env:
+          REAL_PYTHON: "${{ steps.setup-python.outputs.python-path }}"
+        run: |
+          # Control: bait runs without isolation
+          marker="${RUNNER_TEMP}/planted-ran"
+          python3 --version || true
+          env -u PYTHONHOME "$REAL_PYTHON" -c 'import json' || true
+          if ! grep -q '/python3 ' "${marker}" \
+            || ! grep -q 'import .*/json.py' "${marker}"; then
+            echo "Error: the planted bait did not run ❌"
+            cat "${marker}" 2>/dev/null || true
+            exit 1
+          fi
+          echo "Planted bait is live ✅"
+          rm -f "${marker}"
+
+      - name: "Run Action: cold"
+        id: cold
+        uses: $/
+        with:
+          path: "test-python-project/dist"
+
+      - name: "Run Action: warm"
+        id: warm
+        uses: $/
+        with:
+          path_prefix: "test-python-project"
+          path: "dist"
+
+      - name: "Verify no bait ran"
+        if: always()
+        shell: bash
+        env:
+          COLD: "${{ steps.cold.outcome }}"
+          WARM: "${{ steps.warm.outcome }}"
+        run: |
+          # Verify no bait ran
+          failed=0
+          if [ -e "${RUNNER_TEMP}/planted-ran" ]; then
+            echo "Error: the action ran planted bait ❌"
+            cat "${RUNNER_TEMP}/planted-ran"
+            failed=1
+          fi
+          case ":${PATH}:" in
+            *":${GITHUB_WORKSPACE}/xdg-bin:"*)
+              echo "Error: the caller's XDG_BIN_HOME is on PATH ❌"
+              failed=1 ;;
+          esac
+          # The action has no outputs; a passing twine check is its result
+          if [ "${COLD}" != "success" ] || [ "${WARM}" != "success" ]; then
+            echo "Error: action runs did not succeed (${COLD}/${WARM}) ❌"
+            failed=1
+          fi
+          [ "${failed}" -eq 0 ] || exit 1
+          echo "No bait ran; both action runs passed ✅"
