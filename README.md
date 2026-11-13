@@ -65,7 +65,9 @@ The action installs `uv` and a uv-managed Python itself, so callers need
 no setup. It runs that Python by absolute path, in isolated mode, so
 interpreter settings from earlier steps of the caller's job (`PATH`,
 `UV_PYTHON`, `VIRTUAL_ENV`, `PYTHONPATH` and similar) cannot make it
-run an interpreter or module from the caller's workspace.
+run an interpreter or module from the caller's workspace. The action
+fails if the caller's environment sets `UV_NO_MODIFY_PATH`, which no
+step can unset before `setup-uv` reads it.
 
 The action trusts the caller's `PATH`. Its own steps start Python and
 `uv` by absolute path, but the runner itself finds `bash` on `PATH` for
