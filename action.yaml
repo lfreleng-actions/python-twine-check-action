@@ -53,6 +53,21 @@ runs:
           printf '%s\n' "$delimiter"
         } >> "$GITHUB_OUTPUT"
 
+    # setup-uv reads UV_NO_MODIFY_PATH from its environment, which a
+    # composite action inherits from the caller, and no step here can
+    # unset it for a "uses:" step. Fail rather than let the caller steer
+    # setup-uv with it. Names are matched in any case, as Windows treats
+    # environment variable names that way.
+    - name: "Refuse an inherited UV_NO_MODIFY_PATH"
+      shell: bash
+      run: |
+        # Refuse an inherited UV_NO_MODIFY_PATH
+        found="$(compgen -e | grep -ix 'UV_NO_MODIFY_PATH' || true)"
+        if [ -n "$found" ]; then
+          echo "Error: unset UV_NO_MODIFY_PATH before calling this action ❌"
+          exit 1
+        fi
+
     # The uv version comes from a requirements file so Dependabot
     # maintains it; pinning the action alone would still leave the uv
     # binary floating.
