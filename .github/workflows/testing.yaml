@@ -268,3 +268,118 @@ jobs:
           fi
           [ "${failed}" -eq 0 ] || exit 1
           echo "No bait ran; both action runs passed ✅"
+
+  # The action refuses an inherited UV_NO_MODIFY_PATH, in any letter
+  # case and even when empty, before it installs uv. Each case sets its
+  # variables through GITHUB_ENV, as an earlier caller step could, and
+  # checks the outcome; a refused run must leave no uv or Python behind.
+  uv-no-modify-path:
+    name: "UV_NO_MODIFY_PATH (${{ matrix.case }})"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: unset
+            assign: ""
+            expect: success
+          - case: empty
+            assign: "UV_NO_MODIFY_PATH="
+            expect: failure
+          - case: set
+            assign: "UV_NO_MODIFY_PATH=1"
+            expect: failure
+          - case: lower-case
+            assign: "uv_no_modify_path=1"
+            expect: failure
+          - case: mixed-case-empty
+            assign: "Uv_No_Modify_Path="
+            expect: failure
+          - case: same-prefix
+            assign: |-
+              UV_NO_MODIFY_PATH_X=1
+              X_UV_NO_MODIFY_PATH=1
+            expect: success
+    steps:
+      - name: "Checkout sample project repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: "lfreleng-actions/test-python-project"
+          path: "test-python-project"
+
+      - name: "Setup Python"
+        id: setup-python
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: "test-python-project/pyproject.toml"
+
+      - name: "Build sample Python project"
+        shell: bash
+        env:
+          REAL_PYTHON: "${{ steps.setup-python.outputs.python-path }}"
+        run: |
+          # Build sample Python project
+          "$REAL_PYTHON" -m pip --disable-pip-version-check install build
+          cd test-python-project
+          "$REAL_PYTHON" -m build
+
+      - name: "Set caller variables"
+        shell: bash
+        env:
+          ASSIGN: "${{ matrix.assign }}"
+        run: |
+          # Set caller variables
+          if [ -n "${ASSIGN}" ]; then
+            printf '%s\n' "${ASSIGN}" >> "${GITHUB_ENV}"
+          fi
+
+      # Prove each variable reached the environment under its exact
+      # name, so a refusal is not credited to a variable never set.
+      - name: "Check caller variables are set"
+        shell: bash
+        env:
+          ASSIGN: "${{ matrix.assign }}"
+        run: |
+          # Check caller variables are set
+          while IFS= read -r line; do
+            [ -n "${line}" ] || continue
+            name="${line%%=*}"
+            if ! compgen -e | grep -qxF -- "${name}"; then
+              echo "Error: ${name} is not in the environment ❌"
+              exit 1
+            fi
+            echo "${name} is set: '${!name}'"
+          done <<< "${ASSIGN}"
+
+      - name: "Run Action: ${{ matrix.case }}"
+        id: action
+        continue-on-error: true
+        uses: $/
+        with:
+          path: "test-python-project/dist"
+
+      - name: "Verify outcome"
+        if: always()
+        shell: bash
+        env:
+          OUTCOME: "${{ steps.action.outcome }}"
+          EXPECT: "${{ matrix.expect }}"
+        run: |
+          # Verify outcome
+          state="${RUNNER_TEMP}/python-twine-check-action"
+          if [ "${OUTCOME}" != "${EXPECT}" ]; then
+            echo "Error: action outcome ${OUTCOME}, expected ${EXPECT} ❌"
+            exit 1
+          fi
+          # A refusal must come before setup-uv and the Python install
+          if [ "${EXPECT}" = "failure" ] && [ -e "${state}" ]; then
+            echo "Error: the action ran past the refusal ❌"
+            find "${state}" -maxdepth 2
+            exit 1
+          fi
+          echo "Action outcome ${OUTCOME}, as expected ✅"
