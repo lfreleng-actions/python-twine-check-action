@@ -17,6 +17,11 @@ updates:
       prefix: "Chore"
     cooldown:
       default-days: 7
+      # Our own organisation's actions and reusable workflows skip the
+      # cooldown: we review those releases ourselves, and their fixes
+      # need to reach callers without a week's delay.
+      exclude:
+        - "lfreleng-actions/*"
   # Keeps requirements/twine.txt current. A stale twine pin is not a
   # vulnerability, so it raises no security alert; it simply starts
   # rejecting valid distributions once a build backend emits a core
